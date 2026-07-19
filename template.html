@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每日财经速览</title>
+<style>
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    background: #f5f5f5;
+    color: #1a1a1a;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    max-width: 600px;
+    margin: 0 auto;
+    background: #ffffff;
+  }
+  .header {
+    padding: 36px 32px 28px;
+    text-align: center;
+    border-bottom: 3px solid #1a1a1a;
+  }
+  .header-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin-bottom: 8px;
+  }
+  .header-date {
+    font-size: 14px;
+    color: #888;
+    font-weight: 400;
+  }
+  .body {
+    padding: 24px 32px;
+  }
+  .news-item {
+    padding: 20px 0;
+    border-bottom: 1px solid #eee;
+  }
+  .news-item:last-child {
+    border-bottom: none;
+  }
+  .news-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .news-rank {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #1a1a1a;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .news-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin: 0;
+    line-height: 1.4;
+  }
+  .news-category {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    margin: 8px 0;
+  }
+  .cat-宏观 { background: #ffe0e0; color: #c0392b; }
+  .cat-股市 { background: #dbeafe; color: #1d4ed8; }
+  .cat-行业 { background: #d1fae5; color: #047857; }
+  .cat-公司 { background: #fef3c7; color: #b45309; }
+  .cat-国际 { background: #ede9fe; color: #6d28d9; }
+  .cat-综合 { background: #f0f0f0; color: #555; }
+  .news-summary {
+    font-size: 14px;
+    color: #555;
+    margin: 6px 0;
+    line-height: 1.7;
+  }
+  .news-meta {
+    font-size: 12px;
+    color: #999;
+    margin-top: 6px;
+  }
+  .news-meta a {
+    color: #2563eb;
+    text-decoration: none;
+  }
+  .news-meta a:hover {
+    text-decoration: underline;
+  }
+  .footer {
+    padding: 32px 32px;
+    text-align: center;
+    border-top: 1px solid #eee;
+    margin-top: 16px;
+  }
+  .footer-text {
+    font-size: 12px;
+    color: #aaa;
+  }
+  @media (max-width: 480px) {
+    .header { padding: 24px 16px 20px; }
+    .header-title { font-size: 20px; }
+    .body { padding: 16px; }
+    .news-item { padding: 16px 0; }
+    .news-title { font-size: 15px; }
+    .footer { padding: 20px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="header-title">📰 每日财经速览</div>
+    <div class="header-date">{{ date_str }}</div>
+  </div>
+
+  <div class="body">
+    {% for item in news %}
+    <div class="news-item">
+      <div class="news-header">
+        <span class="news-rank">{{ item.rank }}</span>
+        <h2 class="news-title">{{ item.title }}</h2>
+      </div>
+      <span class="news-category cat-{{ item.category }}">{{ item.category }}</span>
+      <p class="news-summary">{{ item.summary }}</p>
+      <div class="news-meta">
+        来源：{{ item.source }}
+        {% if item.url %}&nbsp;·&nbsp;<a href="{{ item.url }}">阅读原文 →</a>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="footer">
+    <p class="footer-text">
+      每日自动生成 · 数据来自东方财富、新浪财经、雪球、华尔街见闻<br>
+      由 AI 生成摘要，仅供参考，不构成投资建议
+    </p>
+  </div>
+
+</div>
+</body>
+</html>
