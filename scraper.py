@@ -1,10 +1,12 @@
 """
 财经新闻爬虫模块。
-从东方财富、新浪财经、雪球、华尔街见闻抓取当日热门新闻。
-每个源并行请求，10 秒超时，单源失败不影响其他源。
+从新浪财经、同花顺、东方财富、网易财经、财联社、东方财富 7×24 快讯共 6 大数据源抓取当日热门新闻。
+每个源并行请求，15 秒超时，单源失败不影响其他源。
 """
 
+import json
 import logging
+import time
 import traceback
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,58 +36,18 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
-# ── 东方财富 ────────────────────────────────────────────
-
-def fetch_eastmoney_news() -> List[Dict]:
-    """
-    东方财富 24 小时热门要闻。
-    使用 push2 API — 更稳定的接口。
-    """
-    try:
-        # 使用东方财富行情中心的新闻接口
-        url = (
-            "https://push2.eastmoney.com/api/qt/ulist.np/get?"
-            "fltt=2&invt=2&fields=f3,f12,f14&secids=1.000001,0.399001&"
-            "np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&cb=json"
-        )
-        # 改用新闻列表接口
-        news_url = (
-            "https://np-listapi.eastmoney.com/comm/api/getNewsList?"
-            "client=web&biz=news&needHasVideo=0&needScore=1&"
-            "pageIndex=1&pageSize=10&sort=hot"
-        )
-        resp = requests.get(news_url, timeout=TIMEOUT, headers={
-            **JSON_HEADERS,
-            "Referer": "https://www.eastmoney.com/",
-        })
-        resp.raise_for_status()
-        data = resp.json()
-        if resp.status_code != 200 or not data.get("data"):
-            logger.warning(f"[eastmoney] bad response: status={resp.status_code}, keys={list(data.keys()) if data else 'empty'}")
-            return []
-
-        items = []
-        raw_list = data.get("data", {}).get("list", [])
-        logger.info(f"[eastmoney] got {len(raw_list)} raw items")
-
-        for item in raw_list[:MAX_PER_SOURCE]:
-            title = item.get("title", "").strip()
-            url = item.get("url", "")
-            # 如果 url 为空或相对路径，构造完整 URL
-            if url and not url.startswith("http"):
-                url = f"https://www.eastmoney.com{url}" if url.startswith("/") else f"https://www.eastmoney.com/{url}"
-            if title:
-                items.append({
-                    "title": title,
-                    "url": url,
-                    "source": "东方财富",
-                    "hot_score": int(item.get("score", 0)),
-                })
-        logger.info(f"[eastmoney] parsed {len(items)} items")
-        return items
-    except Exception:
-        logger.error(f"[eastmoney] FAILED: {traceback.format_exc()}")
-        return []
+def _extract_bracket_title(text: str) -> str:
+    """从财联社 brief/content 的【标题】前缀截取标题；无则取前 60 字兜底。"""
+    if not text:
+        return ""
+    text = text.strip()
+    if text.startswith("【"):
+        end = text.find("】")
+        if end > 0:
+            inner = text[1:end].strip()
+            if inner:
+                return inner
+    return text[:60]
 
 
 # ── 新浪财经 ────────────────────────────────────────────
@@ -130,129 +92,248 @@ def fetch_sina_news() -> List[Dict]:
         return []
 
 
-# ── 雪球 ────────────────────────────────────────────────
+# ── 同花顺 ──────────────────────────────────────────────
 
-def fetch_xueqiu_news() -> List[Dict]:
+def fetch_10jqka_news() -> List[Dict]:
     """
-    雪球今日热议话题。
+    同花顺财经新闻（push/stock 接口）。
     """
     try:
-        session = requests.Session()
-        session.headers.update(JSON_HEADERS)
-
-        # 先访问首页获取 cookie
-        home = session.get("https://xueqiu.com/", timeout=TIMEOUT)
-        home.raise_for_status()
-
-        # 请求热议接口
-        resp = session.get(
-            "https://xueqiu.com/statuses/hot/listV2.json",
-            timeout=TIMEOUT,
+        url = (
+            "https://news.10jqka.com.cn/tapp/news/push/stock/?"
+            "page=1&tag=&track=website&pagesize=10"
         )
-        resp.raise_for_status()
-        data = resp.json()
-
-        raw_items = data.get("items", [])
-        logger.info(f"[xueqiu] got {len(raw_items)} raw items")
-
-        items = []
-        for item in raw_items[:MAX_PER_SOURCE]:
-            title = item.get("title", "") or item.get("text", "")
-            target = item.get("target", "")
-            url = target
-            if target and not target.startswith("http"):
-                url = f"https://xueqiu.com{target}"
-            if title:
-                items.append({
-                    "title": title.strip(),
-                    "url": url,
-                    "source": "雪球",
-                    "hot_score": int(item.get("reply_count", 0)) or int(item.get("like_count", 0)),
-                })
-        logger.info(f"[xueqiu] parsed {len(items)} items")
-        return items
-    except Exception:
-        logger.error(f"[xueqiu] FAILED: {traceback.format_exc()}")
-        return []
-
-
-# ── 华尔街见闻 ──────────────────────────────────────────
-
-def fetch_wallstreetcn_news() -> List[Dict]:
-    """
-    华尔街见闻快讯 / 热门文章。
-    """
-    try:
-        # 使用 lives API 获取快讯
-        url = "https://api-one.wallstcn.com/apiv1/content/lives?limit=15&channel=global"
-        resp = requests.get(url, timeout=TIMEOUT, headers=JSON_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-
-        raw_items = data.get("data", {}).get("items", [])
-        logger.info(f"[wallstreetcn] got {len(raw_items)} raw items")
-
-        items = []
-        for item in raw_items[:MAX_PER_SOURCE]:
-            title = item.get("title", "").strip()
-            if not title:
-                content = item.get("content_text", "").strip()
-                title = content[:80] if content else ""
-            item_id = item.get("id", "")
-            url = f"https://wallstreetcn.com/livenews/{item_id}" if item_id else ""
-
-            if title:
-                items.append({
-                    "title": title,
-                    "url": url,
-                    "source": "华尔街见闻",
-                    "hot_score": 50,
-                })
-        logger.info(f"[wallstreetcn] parsed {len(items)} items")
-        return items
-    except Exception:
-        logger.error(f"[wallstreetcn] FAILED: {traceback.format_exc()}")
-        return []
-
-
-# ── 备用源：澎湃财经 ────────────────────────────────────
-
-def fetch_thepaper_news() -> List[Dict]:
-    """
-    备用源：澎湃财经。
-    仅在主要源全部失败时提供后备。
-    """
-    try:
-        url = "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar"
         resp = requests.get(url, timeout=TIMEOUT, headers={
             **JSON_HEADERS,
-            "Referer": "https://www.thepaper.cn/",
+            "Referer": "https://news.10jqka.com.cn/",
         })
         resp.raise_for_status()
         data = resp.json()
 
-        # 尝试从财经频道获取
-        finance_url = "https://api.thepaper.cn/contentapi/nodeCont/25949?pageidx=0&pagesize=10"
-        resp2 = requests.get(finance_url, timeout=TIMEOUT, headers=JSON_HEADERS)
-        resp2.raise_for_status()
-        data2 = resp2.json()
+        if str(data.get("code")) != "200":
+            logger.warning(f"[10jqka] bad response: code={data.get('code')}")
+            return []
 
         items = []
-        for item in data2.get("data", {}).get("list", [])[:MAX_PER_SOURCE]:
-            title = item.get("name", "").strip()
-            url = item.get("link", "") or f"https://www.thepaper.cn/newsDetail_forward_{item.get('contId', '')}"
+        raw_list = data.get("data", {}).get("list", [])
+        logger.info(f"[10jqka] got {len(raw_list)} raw items")
+
+        for item in raw_list[:MAX_PER_SOURCE]:
+            title = item.get("title", "").strip()
+            url = item.get("url", "")
+            if url and not url.startswith("http"):
+                url = f"https://news.10jqka.com.cn{url}" if url.startswith("/") else f"https://news.10jqka.com.cn/{url}"
             if title:
                 items.append({
                     "title": title,
                     "url": url,
-                    "source": "澎湃财经",
-                    "hot_score": int(item.get("praiseTimes", 0)),
+                    "source": "同花顺",
+                    "hot_score": int(item.get("ctime", 0)) or int(item.get("id", 0)),
                 })
-        logger.info(f"[thepaper] parsed {len(items)} items")
+        logger.info(f"[10jqka] parsed {len(items)} items")
         return items
     except Exception:
-        logger.error(f"[thepaper] FAILED: {traceback.format_exc()}")
+        logger.error(f"[10jqka] FAILED: {traceback.format_exc()}")
         return []
+
+
+# ── 东方财富 ────────────────────────────────────────────
+
+def fetch_eastmoney_news() -> List[Dict]:
+    """
+    东方财富财经要闻（getNewsByColumns 接口，column=350）。
+    """
+    try:
+        req_trace = int(time.time() * 1000)
+        url = (
+            "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns?"
+            "client=web&biz=web_news_col&column=350&order=1&needInteractData=0&"
+            f"page_index=1&page_size=10&req_trace={req_trace}"
+        )
+        resp = requests.get(url, timeout=TIMEOUT, headers={
+            **JSON_HEADERS,
+            "Referer": "https://www.eastmoney.com/",
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+        if str(data.get("code")) != "1":
+            logger.warning(f"[eastmoney] bad response: code={data.get('code')}, message={data.get('message')}")
+            return []
+
+        items = []
+        raw_list = data.get("data", {}).get("list", [])
+        logger.info(f"[eastmoney] got {len(raw_list)} raw items")
+
+        for item in raw_list[:MAX_PER_SOURCE]:
+            title = item.get("title", "").strip()
+            url = item.get("url") or item.get("uniqueUrl") or ""
+            if url:
+                url = url.replace("http://", "https://", 1)
+            elif item.get("code"):
+                url = f"https://finance.eastmoney.com/a/{item['code']}.html"
+            if title:
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "source": "东方财富",
+                    "hot_score": 0,
+                })
+        logger.info(f"[eastmoney] parsed {len(items)} items")
+        return items
+    except Exception:
+        logger.error(f"[eastmoney] FAILED: {traceback.format_exc()}")
+        return []
+
+
+# ── 网易财经 ────────────────────────────────────────────
+
+def fetch_netease_news() -> List[Dict]:
+    """
+    网易财经新闻流（JSONP 接口，需剥壳 data_callback(...)）。
+    """
+    try:
+        url = "https://money.163.com/special/00259BVP/news_flow_index.js"
+        resp = requests.get(url, timeout=TIMEOUT, headers={
+            **JSON_HEADERS,
+            "Referer": "https://money.163.com/",
+        })
+        resp.raise_for_status()
+
+        text = resp.text.strip()
+        prefix = "data_callback("
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+        if text.endswith(")"):
+            text = text[:-1]
+        data = json.loads(text)
+
+        items = []
+        logger.info(f"[netease] got {len(data)} raw items")
+
+        for item in data[:MAX_PER_SOURCE]:
+            title = item.get("title", "").strip()
+            url = item.get("docurl") or item.get("tlink") or ""
+            if url.startswith("http://"):
+                url = "https://" + url[len("http://"):]
+            if title:
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "source": "网易财经",
+                    "hot_score": int(item.get("tienum", 0)),
+                })
+        logger.info(f"[netease] parsed {len(items)} items")
+        return items
+    except Exception:
+        logger.error(f"[netease] FAILED: {traceback.format_exc()}")
+        return []
+
+
+# ── 财联社 ──────────────────────────────────────────────
+
+def fetch_cls_news() -> List[Dict]:
+    """
+    财联社电报（api/cache 公开接口，免签名）。
+    过滤 type==20015（盘中宝付费项）与 id<=0（占位/分隔项），title 空时从 brief/content 兜底。
+    """
+    try:
+        url = "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"
+        resp = requests.get(url, timeout=TIMEOUT, headers={
+            **JSON_HEADERS,
+            "Referer": "https://www.cls.cn/telegraph",
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("errno") != 0:
+            logger.warning(f"[cls] bad response: errno={data.get('errno')}")
+            return []
+
+        items = []
+        raw_list = data.get("data", {}).get("roll_data", [])
+        logger.info(f"[cls] got {len(raw_list)} raw items")
+
+        for item in raw_list[:MAX_PER_SOURCE]:
+            item_id = item.get("id", 0)
+            item_type = item.get("type", -1)
+            if item_id <= 0 or item_type == 20015:
+                continue
+            title = item.get("title", "").strip()
+            if not title:
+                raw = item.get("brief") or item.get("content") or ""
+                title = _extract_bracket_title(raw)
+            if not title:
+                continue
+            items.append({
+                "title": title,
+                "url": f"https://www.cls.cn/detail/{item_id}",
+                "source": "财联社",
+                "hot_score": int(item.get("reading_num", 0)) or int(item.get("ctime", 0)),
+            })
+        logger.info(f"[cls] parsed {len(items)} items")
+        return items
+    except Exception:
+        logger.error(f"[cls] FAILED: {traceback.format_exc()}")
+        return []
+
+
+# ── 东方财富 7×24 快讯 ──────────────────────────────────
+
+def fetch_eastmoney_724_news() -> List[Dict]:
+    """
+    东方财富 7×24 小时快讯（getFastNewsList 接口）。
+    """
+    try:
+        req_trace = int(time.time() * 1000)
+        url = (
+            "https://np-listapi.eastmoney.com/comm/web/getFastNewsList?"
+            "client=web&biz=web_724&fastColumn=102&sortEnd=&pageSize=10&"
+            f"req_trace={req_trace}"
+        )
+        resp = requests.get(url, timeout=TIMEOUT, headers={
+            **JSON_HEADERS,
+            "Referer": "https://www.eastmoney.com/",
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+        if str(data.get("code")) != "1":
+            logger.warning(f"[eastmoney724] bad response: code={data.get('code')}, message={data.get('message')}")
+            return []
+
+        items = []
+        raw_list = data.get("data", {}).get("fastNewsList", [])
+        logger.info(f"[eastmoney724] got {len(raw_list)} raw items")
+
+        for item in raw_list[:MAX_PER_SOURCE]:
+            title = item.get("title", "").strip()
+            code = item.get("code", "")
+            url = f"https://finance.eastmoney.com/a/{code}.html" if code else ""
+            if title:
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "source": "东方财富 7×24 快讯",
+                    "hot_score": int(item.get("pinglun_Num", 0)) or int(item.get("realSort", 0)),
+                })
+        logger.info(f"[eastmoney724] parsed {len(items)} items")
+        return items
+    except Exception:
+        logger.error(f"[eastmoney724] FAILED: {traceback.format_exc()}")
+        return []
+
+
+# ── 源注册表 ────────────────────────────────────────────
+
+SOURCE_REGISTRY: List[Dict] = [
+    {"name": "新浪财经", "fetch": fetch_sina_news},
+    {"name": "同花顺", "fetch": fetch_10jqka_news},
+    {"name": "东方财富", "fetch": fetch_eastmoney_news},
+    {"name": "网易财经", "fetch": fetch_netease_news},
+    {"name": "财联社", "fetch": fetch_cls_news},
+    {"name": "东方财富 7×24 快讯", "fetch": fetch_eastmoney_724_news},
+]
 
 
 # ── 编排 ────────────────────────────────────────────────
@@ -262,16 +343,9 @@ def scrape_all() -> List[Dict]:
     并行抓取全部数据源，返回汇总新闻列表。
     单个源失败不影响其他源。
     """
-    sources = [
-        fetch_eastmoney_news,
-        fetch_sina_news,
-        fetch_xueqiu_news,
-        fetch_wallstreetcn_news,
-    ]
-
     all_news = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(fn): getattr(fn, '__name__', str(fn)) for fn in sources}
+    with ThreadPoolExecutor(max_workers=len(SOURCE_REGISTRY)) as executor:
+        futures = {executor.submit(src["fetch"]): src["name"] for src in SOURCE_REGISTRY}
         for future in as_completed(futures):
             name = futures[future]
             try:
